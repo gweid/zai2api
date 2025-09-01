@@ -1,8 +1,8 @@
-# OpenAI-Compatible API Proxy for Z.ai
+# zai2api
 
 ## 项目简介
 
-这是一个为 Z.ai 提供 OpenAI API 兼容接口的代理服务，允许开发者通过标准的 OpenAI API 格式访问 Z.ai 的 GLM-4.5 模型。
+为 Z.ai 提供 OpenAI API 兼容接口的代理服务，允许开发者通过标准的 OpenAI API 格式访问 Z.ai 的 GLM-4.5 模型。
 
 ## 主要特性
 
