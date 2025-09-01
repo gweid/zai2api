@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  zai2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zai2api
+    ports:
+      - "3007:3007"
+    environment:
+      # 可以通过环境变量覆盖默认配置
+      - UPSTREAM_URL=https://chat.z.ai/api/chat/completions
+      - DEFAULT_KEY=sk-123456
+      - UPSTREAM_TOKEN=eyJ...
+      - MODEL_NAME=GLM-4.5
+      - PORT=:3007
+      - DEBUG_MODE=true
+      - THINK_TAGS_MODE=strip
+      - ANON_TOKEN_ENABLED=true
+    restart: unless-stopped
+    networks:
+      - zai2api-network
+
+networks:
+  zai2api-network:
+    driver: bridge
