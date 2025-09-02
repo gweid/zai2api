@@ -23,60 +23,18 @@
 
 ## 快速开始
 
-### 方式一：直接运行
+### 方式一：使用 Docker Compose（推荐）
 
 1. 克隆仓库：
    ```bash
-   git clone https://github.com/yourusername/zai-openai-proxy.git
-   cd zai-openai-proxy
+   git clone https://github.com/yourusername/zai2api.git
+   cd zai2api
    ```
 
-2. 设置环境变量（可选）：
-   ```bash
-   export UPSTREAM_URL="https://chat.z.ai/api/chat/completions"
-   export DEFAULT_KEY="sk-your-key"
-   export MODEL_NAME="GLM-4.5"
-   export PORT=":3007"
-   export DEBUG_MODE="true"
-   ```
-
-3. 运行服务：
-   ```bash
-   go run main.go
-   ```
-
-### 方式二：使用 Docker
-
-1. 克隆仓库：
-   ```bash
-   git clone https://github.com/yourusername/zai-openai-proxy.git
-   cd zai-openai-proxy
-   ```
-
-2. 构建镜像：
-   ```bash
-   docker build -t zai2api .
-   ```
-
-3. 运行容器：
-   ```bash
-   docker run -d \
-     -p 3007:3007 \
-     -e DEFAULT_KEY="sk-your-key" \
-     -e DEBUG_MODE="false" \
-     --name zai2api \
-     zai2api
-   ```
-
-### 方式三：使用 Docker Compose（推荐）
-
-1. 克隆仓库：
-   ```bash
-   git clone https://github.com/yourusername/zai-openai-proxy.git
-   cd zai-openai-proxy
-   ```
-
-2. 修改 `docker-compose.yml` 中的环境变量（可选）
+2. 添加环境变量，修改
+  ```bash
+  cp .env.example .env
+  ```
 
 3. 启动服务：
    ```bash
@@ -166,15 +124,6 @@ curl -X POST http://localhost:3007/v1/chat/completions \
 - `strip`: 去除 `<details>` 标签，不显示思考过程
 - `think`: 将 `<details>` 标签转换为 `<think>` 标签
 - `raw`: 保留原始的 `<details>` 标签
-
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request！请确保：
-1. 代码符合 Go 的代码风格
-2. 提交前运行测试
-3. 更新相关文档
-4. 提供清晰的提交信息
 
 ## 许可证
 
