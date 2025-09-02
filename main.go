@@ -16,7 +16,7 @@ import (
 // 配置常量
 const (
 	UpstreamUrl       = "https://chat.z.ai/api/chat/completions"
-	DefaultKey        = "sk-123456" // 下游客户端鉴权key
+	DefaultKey        = "sk-123456"                                                                                                                                                                                                            // 下游客户端鉴权key
 	UpstreamToken     = "eyJ..." // 上游API的token（回退用）
 	DefaultModelName  = "GLM-4.5"
 	ThinkingModelName = "GLM-4.5-Thinking"
@@ -30,6 +30,9 @@ const (
 	ThinkTagsMode = "think" // strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
 )
 
+// AnonTokenEnabled 匿名token开关
+const AnonTokenEnabled = true
+
 // 伪装前端头部（来自抓包）
 const (
 	XFeVersion  = "prod-fe-1.0.70"
@@ -39,9 +42,6 @@ const (
 	SecChUaPlat = "\"Windows\""
 	OriginBase  = "https://chat.z.ai"
 )
-
-// AnonTokenEnabled 匿名token开关
-const AnonTokenEnabled = true
 
 // OpenAIRequest OpenAI 请求结构
 type OpenAIRequest struct {
