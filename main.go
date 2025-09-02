@@ -29,9 +29,9 @@ var (
 
 // 伪装前端头部（来自抓包）
 const (
-	X_FE_VERSION   = "prod-fe-1.0.70"
-	BROWSER_UA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
-	SEC_CH_UA      = "\"Not;A=Brand\";v=\"99\", \"Microsoft Edge\";v=\"139\", \"Chromium\";v=\"139\""
+	X_FE_VERSION   = "prod-fe-1.0.76"
+	BROWSER_UA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/139.0.0.0"
+	SEC_CH_UA      = "\"Not;A=Brand\";v=\"99\", \"Edge\";v=\"139\""
 	SEC_CH_UA_MOB  = "?0"
 	SEC_CH_UA_PLAT = "\"Windows\""
 	ORIGIN_BASE    = "https://chat.z.ai"
@@ -46,7 +46,7 @@ func init() {
 	MODEL_NAME = getEnv("MODEL_NAME", "GLM-4.5")
 	PORT = getEnv("PORT", ":3007")
 	DEBUG_MODE = getEnvBool("DEBUG_MODE", true)
-	THINK_TAGS_MODE = getEnv("THINK_TAGS_MODE", "strip")
+	THINK_TAGS_MODE = getEnv("THINK_TAGS_MODE", "think")
 	ANON_TOKEN_ENABLED = getEnvBool("ANON_TOKEN_ENABLED", true)
 }
 
@@ -138,6 +138,7 @@ type UpstreamData struct {
 	Type string `json:"type"`
 	Data struct {
 		DeltaContent string         `json:"delta_content"`
+		EditContent  string         `json:"edit_content"`
 		Phase        string         `json:"phase"`
 		Done         bool           `json:"done"`
 		Usage        Usage          `json:"usage,omitempty"`
@@ -165,6 +166,182 @@ type Model struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+}
+
+// ContentProcessor 用于处理内容的状态管理
+type ContentProcessor struct {
+	historyPhase string
+}
+
+// NewContentProcessor 创建新的内容处理器
+func NewContentProcessor() *ContentProcessor {
+	return &ContentProcessor{
+		historyPhase: "thinking",
+	}
+}
+
+// ProcessContent 处理内容，与 Python 版本逻辑保持一致
+func (cp *ContentProcessor) ProcessContent(content string, phase string) string {
+	historyContent := content
+	
+	if content != "" && (phase == "thinking" || strings.Contains(content, "summary>")) {
+		// 移除 details 标签
+		detailsRe := regexp.MustCompile(`(?s)<details[^>]*?>.*?</details>`)
+		content = detailsRe.ReplaceAllString(content, "")
+		content = strings.ReplaceAll(content, "</thinking>", "")
+		content = strings.ReplaceAll(content, "<Full>", "")
+		content = strings.ReplaceAll(content, "</Full>", "")
+		
+		switch THINK_TAGS_MODE {
+		case "think":
+			if phase == "thinking" {
+				content = strings.TrimPrefix(content, "> ")
+				content = strings.ReplaceAll(content, "\n>", "\n")
+				content = strings.TrimSpace(content)
+			}
+			
+			// 移除 summary 标签
+			summaryRe := regexp.MustCompile(`\n?<summary>.*?</summary>\n?`)
+			content = summaryRe.ReplaceAllString(content, "")
+			// 替换 details 为 think
+			detailsOpenRe := regexp.MustCompile(`<details[^>]*>\n?`)
+			content = detailsOpenRe.ReplaceAllString(content, "<think>\n\n")
+			detailsCloseRe := regexp.MustCompile(`\n?</details>`)
+			content = detailsCloseRe.ReplaceAllString(content, "\n\n</think>")
+			
+			if phase == "answer" {
+				// 判断 </think> 后是否有内容
+				re := regexp.MustCompile(`(?s)^(.*?</think>)(.*)$`)
+				if matches := re.FindStringSubmatch(content); len(matches) == 3 {
+					_, after := matches[1], matches[2]
+					if strings.TrimSpace(after) != "" {
+						// 回答休止：</think> 后有内容
+						if cp.historyPhase == "thinking" {
+							// 上条是思考 → 结束思考，加上回答
+							content = fmt.Sprintf("\n\n</think>\n\n%s", strings.TrimLeft(after, "\n"))
+						} else if cp.historyPhase == "answer" {
+							// 上条是回答 → 清除所有
+							content = ""
+						}
+					} else {
+						// 思考休止：</think> 后没有内容 → 保留一个 </think>
+						content = "\n\n</think>"
+					}
+				}
+			}
+			
+		case "pure":
+			if phase == "thinking" {
+				summaryRe := regexp.MustCompile(`\n?<summary>.*?</summary>`)
+				content = summaryRe.ReplaceAllString(content, "")
+			}
+			
+			detailsOpenRe := regexp.MustCompile(`<details[^>]*>\n?`)
+			content = detailsOpenRe.ReplaceAllString(content, `<details type="reasoning">`)
+			detailsCloseRe := regexp.MustCompile(`\n?</details>`)
+			content = detailsCloseRe.ReplaceAllString(content, "\n\n></details>")
+			
+			if phase == "answer" {
+				// 判断 </details> 后是否有内容
+				re := regexp.MustCompile(`(?s)^(.*?</details>)(.*)$`)
+				if matches := re.FindStringSubmatch(content); len(matches) == 3 {
+					_, after := matches[1], matches[2]
+					if strings.TrimSpace(after) != "" {
+						// 回答休止：</details> 后有内容
+						if cp.historyPhase == "thinking" {
+							// 上条是思考 → 结束思考，去除回答开头空格，加上回答
+							content = fmt.Sprintf("\n\n%s", strings.TrimLeft(after, "\n"))
+						} else if cp.historyPhase == "answer" {
+							// 上条是回答 → 清除所有
+							content = ""
+						}
+					} else {
+						content = ""
+					}
+				}
+			}
+			// 清理 details 标签
+			detailsCleanRe := regexp.MustCompile(`</?details[^>]*>`)
+			content = detailsCleanRe.ReplaceAllString(content, "")
+			
+		case "raw":
+			if phase == "thinking" {
+				summaryRe := regexp.MustCompile(`\n?<summary>.*?</summary>`)
+				content = summaryRe.ReplaceAllString(content, "")
+			}
+			
+			detailsOpenRe := regexp.MustCompile(`<details[^>]*>\n?`)
+			content = detailsOpenRe.ReplaceAllString(content, `<details type="reasoning" open><div>
+
+`)
+			detailsCloseRe := regexp.MustCompile(`\n?</details>`)
+			content = detailsCloseRe.ReplaceAllString(content, "\n\n</div></details>")
+			
+			if phase == "answer" {
+				// 判断 </details> 后是否有内容
+				re := regexp.MustCompile(`(?s)^(.*?</details>)(.*)$`)
+				if matches := re.FindStringSubmatch(content); len(matches) == 3 {
+					before, after := matches[1], matches[2]
+					if strings.TrimSpace(after) != "" {
+						// 回答休止：</details> 后有内容
+						if cp.historyPhase == "thinking" {
+							// 上条是思考 → 结束思考，加上回答
+							content = fmt.Sprintf("\n\n</details>\n\n%s", strings.TrimLeft(after, "\n"))
+						} else if cp.historyPhase == "answer" {
+							// 上条是回答 → 清除所有
+							content = ""
+						}
+					} else {
+						// 思考休止: </details> 后没有内容 → 加入 summary + </details>
+						summaryRe := regexp.MustCompile(`(?s)<summary>.*?</summary>`)
+						durationRe := regexp.MustCompile(`duration="(\d+)"`)
+						
+						if summaryMatch := summaryRe.FindString(before); summaryMatch != "" {
+							content = fmt.Sprintf("\n\n</div>%s</details>\n\n", summaryMatch)
+						} else if durationMatch := durationRe.FindStringSubmatch(before); len(durationMatch) > 1 {
+							duration := durationMatch[1]
+							content = fmt.Sprintf("\n\n</div><summary>Thought for %s seconds</summary></details>\n\n", duration)
+						} else {
+							content = "\n\n</div></details>"
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// 调试日志
+	if historyContent != content {
+		debugLog("R 内容: %s %s", phase, historyContent)
+		debugLog("W 内容: %s %s", phase, content)
+	} else {
+		debugLog("R 内容: %s %s", phase, historyContent)
+	}
+	
+	cp.historyPhase = phase
+	return content
+}
+
+// ExtractContent 从上游数据中提取内容
+func (cp *ContentProcessor) ExtractContent(data UpstreamData) string {
+	phase := data.Data.Phase
+	delta := data.Data.DeltaContent
+	edit := data.Data.EditContent
+	
+	content := delta
+	if content == "" {
+		content = edit
+	}
+	
+	if content != "" && (phase == "answer" || phase == "thinking") {
+		processed := cp.ProcessContent(content, phase)
+		if processed == "" {
+			return ""
+		}
+		return processed
+	}
+	
+	return content
 }
 
 // debug日志函数
@@ -432,28 +609,8 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 		return
 	}
 
-	// 用于策略2：总是展示thinking（配合标签处理）
-	transformThinking := func(s string) string {
-		// 去 <summary>…</summary>
-		s = regexp.MustCompile(`(?s)<summary>.*?</summary>`).ReplaceAllString(s, "")
-		// 清理残留自定义标签，如 </thinking>、<Full> 等
-		s = strings.ReplaceAll(s, "</thinking>", "")
-		s = strings.ReplaceAll(s, "<Full>", "")
-		s = strings.ReplaceAll(s, "</Full>", "")
-		s = strings.TrimSpace(s)
-		switch THINK_TAGS_MODE {
-		case "think":
-			s = regexp.MustCompile(`<details[^>]*>`).ReplaceAllString(s, "<think>")
-			s = strings.ReplaceAll(s, "</details>", "</think>")
-		case "strip":
-			s = regexp.MustCompile(`<details[^>]*>`).ReplaceAllString(s, "")
-			s = strings.ReplaceAll(s, "</details>", "")
-		}
-		// 处理每行前缀 "> "（包括起始位置）
-		s = strings.TrimPrefix(s, "> ")
-		s = strings.ReplaceAll(s, "\n> ", "\n")
-		return strings.TrimSpace(s)
-	}
+	// 创建内容处理器
+	processor := NewContentProcessor()
 
 	// 设置SSE头部
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -466,9 +623,12 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 		return
 	}
 
+	// 生成响应ID
+	completionID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+
 	// 发送第一个chunk（role）
 	firstChunk := OpenAIResponse{
-		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+		ID:      completionID,
 		Object:  "chat.completion.chunk",
 		Created: time.Now().Unix(),
 		Model:   MODEL_NAME,
@@ -520,7 +680,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 			debugLog("上游错误: code=%d, detail=%s", errObj.Code, errObj.Detail)
 			// 结束下游流
 			endChunk := OpenAIResponse{
-				ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+				ID:      completionID,
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
 				Model:   MODEL_NAME,
@@ -532,32 +692,29 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 			break
 		}
 
-		debugLog("解析成功 - 类型: %s, 阶段: %s, 内容长度: %d, 完成: %v",
-			upstreamData.Type, upstreamData.Data.Phase, len(upstreamData.Data.DeltaContent), upstreamData.Data.Done)
+		debugLog("解析成功 - 类型: %s, 阶段: %s, delta长度: %d, edit长度: %d, 完成: %v",
+			upstreamData.Type, upstreamData.Data.Phase,
+			len(upstreamData.Data.DeltaContent), len(upstreamData.Data.EditContent),
+			upstreamData.Data.Done)
 
-		// 策略2：总是展示thinking + answer
-		if upstreamData.Data.DeltaContent != "" {
-			var out = upstreamData.Data.DeltaContent
-			if upstreamData.Data.Phase == "thinking" {
-				out = transformThinking(out)
-			}
-			if out != "" {
-				debugLog("发送内容(%s): %s", upstreamData.Data.Phase, out)
-				chunk := OpenAIResponse{
-					ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
-					Object:  "chat.completion.chunk",
-					Created: time.Now().Unix(),
-					Model:   MODEL_NAME,
-					Choices: []Choice{
-						{
-							Index: 0,
-							Delta: Delta{Content: out},
-						},
+		// 使用内容处理器提取和处理内容
+		content := processor.ExtractContent(upstreamData)
+		if content != "" {
+			debugLog("发送内容(%s): %s", upstreamData.Data.Phase, content)
+			chunk := OpenAIResponse{
+				ID:      completionID,
+				Object:  "chat.completion.chunk",
+				Created: time.Now().Unix(),
+				Model:   MODEL_NAME,
+				Choices: []Choice{
+					{
+						Index: 0,
+						Delta: Delta{Content: content},
 					},
-				}
-				writeSSEChunk(w, chunk)
-				flusher.Flush()
+				},
 			}
+			writeSSEChunk(w, chunk)
+			flusher.Flush()
 		}
 
 		// 检查是否结束
@@ -565,7 +722,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 			debugLog("检测到流结束信号")
 			// 发送结束chunk
 			endChunk := OpenAIResponse{
-				ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+				ID:      completionID,
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
 				Model:   MODEL_NAME,
@@ -594,7 +751,13 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 }
 
 func writeSSEChunk(w http.ResponseWriter, chunk OpenAIResponse) {
-	data, _ := json.Marshal(chunk)
+	// 使用自定义 encoder 避免 HTML 转义
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false) // 关闭 HTML 转义
+	encoder.Encode(chunk)
+	// 移除末尾的换行符（Encode 会添加）
+	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
@@ -620,7 +783,10 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 		return
 	}
 
-	// 收集完整响应（策略2：thinking与answer都纳入，thinking转换）
+	// 创建内容处理器
+	processor := NewContentProcessor()
+	
+	// 收集完整响应
 	var fullContent strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
 	debugLog("开始收集完整响应内容")
@@ -641,32 +807,10 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 			continue
 		}
 
-		if upstreamData.Data.DeltaContent != "" {
-			out := upstreamData.Data.DeltaContent
-			if upstreamData.Data.Phase == "thinking" {
-				out = func(s string) string {
-					// 同步一份转换逻辑（与流式一致）
-					s = regexp.MustCompile(`(?s)<summary>.*?</summary>`).ReplaceAllString(s, "")
-					s = strings.ReplaceAll(s, "</thinking>", "")
-					s = strings.ReplaceAll(s, "<Full>", "")
-					s = strings.ReplaceAll(s, "</Full>", "")
-					s = strings.TrimSpace(s)
-					switch THINK_TAGS_MODE {
-					case "think":
-						s = regexp.MustCompile(`<details[^>]*>`).ReplaceAllString(s, "<think>")
-						s = strings.ReplaceAll(s, "</details>", "</think>")
-					case "strip":
-						s = regexp.MustCompile(`<details[^>]*>`).ReplaceAllString(s, "")
-						s = strings.ReplaceAll(s, "</details>", "")
-					}
-					s = strings.TrimPrefix(s, "> ")
-					s = strings.ReplaceAll(s, "\n> ", "\n")
-					return strings.TrimSpace(s)
-				}(out)
-			}
-			if out != "" {
-				fullContent.WriteString(out)
-			}
+		// 使用内容处理器提取和处理内容
+		content := processor.ExtractContent(upstreamData)
+		if content != "" {
+			fullContent.WriteString(content)
 		}
 
 		if upstreamData.Data.Done || upstreamData.Data.Phase == "done" {
@@ -678,9 +822,12 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 	finalContent := fullContent.String()
 	debugLog("内容收集完成，最终长度: %d", len(finalContent))
 
+	// 生成响应ID
+	completionID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+
 	// 构造完整响应
 	response := OpenAIResponse{
-		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+		ID:      completionID,
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   MODEL_NAME,
