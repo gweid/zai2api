@@ -16,7 +16,7 @@ services:
       - MODEL_NAME=GLM-4.5
       - PORT=:3007
       - DEBUG_MODE=true
-      - THINK_TAGS_MODE=strip
+      - THINK_TAGS_MODE=think
       - ANON_TOKEN_ENABLED=true
     restart: unless-stopped
     networks:
