@@ -8,6 +8,24 @@ services:
     container_name: zai2api
     ports:
       - "3007:3007"
+    environment:
+      # 上游 API 配置
+      - UPSTREAM_URL=https://chat.z.ai/api/chat/completions
+      - UPSTREAM_TOKEN=eyJ...  # 替换为实际的上游 token
+      
+      # 认证配置
+      - DEFAULT_KEY=sk-123456  # 下游客户端鉴权key
+      - ANON_TOKEN_ENABLED=true  # 是否启用匿名token
+      
+      # 模型配置
+      - DEFAULT_MODEL_NAME=GLM-4.5
+      - THINKING_MODEL_NAME=GLM-4.5-Thinking
+      - SEARCH_MODEL_NAME=GLM-4.5-Search
+      
+      # 服务配置
+      - PORT=:3007
+      - DEBUG_MODE=true  # debug模式开关
+      - THINK_TAGS_MODE=think  # strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
     restart: unless-stopped
     networks:
       - zai2api-network

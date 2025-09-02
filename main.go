@@ -8,30 +8,63 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// 配置常量
-const (
-	UpstreamUrl       = "https://chat.z.ai/api/chat/completions"
-	DefaultKey        = "sk-123456"                                                                                                                                                                                                            // 下游客户端鉴权key
-	UpstreamToken     = "eyJ..." // 上游API的token（回退用）
-	DefaultModelName  = "GLM-4.5"
-	ThinkingModelName = "GLM-4.5-Thinking"
-	SearchModelName   = "GLM-4.5-Search"
-	Port              = ":3007"
-	DebugMode         = true // debug模式开关
-)
+// Config 配置结构体
+type Config struct {
+	UpstreamUrl       string
+	DefaultKey        string
+	UpstreamToken     string
+	DefaultModelName  string
+	ThinkingModelName string
+	SearchModelName   string
+	Port              string
+	DebugMode         bool
+	ThinkTagsMode     string // strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
+	AnonTokenEnabled  bool
+}
 
-// ThinkTagsMode 思考内容处理策略
-const (
-	ThinkTagsMode = "think" // strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
-)
+// 全局配置变量
+var config Config
 
-// AnonTokenEnabled 匿名token开关
-const AnonTokenEnabled = true
+// initConfig 初始化配置
+func initConfig() {
+	// 从环境变量读取配置，如果没有设置则使用默认值
+	config.UpstreamUrl = getEnv("UPSTREAM_URL", "https://chat.z.ai/api/chat/completions")
+	config.DefaultKey = getEnv("DEFAULT_KEY", "sk-123456")
+	config.UpstreamToken = getEnv("UPSTREAM_TOKEN", "eyJ...") // 上游API的token（回退用）
+	config.DefaultModelName = getEnv("DEFAULT_MODEL_NAME", "GLM-4.5")
+	config.ThinkingModelName = getEnv("THINKING_MODEL_NAME", "GLM-4.5-Thinking")
+	config.SearchModelName = getEnv("SEARCH_MODEL_NAME", "GLM-4.5-Search")
+	config.Port = getEnv("PORT", ":3007")
+	config.DebugMode = getBoolEnv("DEBUG_MODE", true)
+	config.ThinkTagsMode = getEnv("THINK_TAGS_MODE", "think")
+	config.AnonTokenEnabled = getBoolEnv("ANON_TOKEN_ENABLED", true)
+}
+
+// getEnv 获取环境变量，如果不存在则返回默认值
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// getBoolEnv 获取布尔型环境变量
+func getBoolEnv(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		boolValue, err := strconv.ParseBool(value)
+		if err == nil {
+			return boolValue
+		}
+	}
+	return defaultValue
+}
 
 // 伪装前端头部（来自抓包）
 const (
@@ -150,7 +183,7 @@ type Model struct {
 
 // debug日志函数
 func debugLog(format string, args ...interface{}) {
-	if DebugMode {
+	if config.DebugMode {
 		log.Printf("[DEBUG] "+format, args...)
 	}
 }
@@ -194,15 +227,18 @@ func getAnonymousToken() (string, error) {
 }
 
 func main() {
+	// 初始化配置
+	initConfig()
+	
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	http.HandleFunc("/", handleOptions)
 
-	log.Printf("OpenAI兼容API服务器启动在端口%s", Port)
-	log.Printf("模型: %s", DebugMode)
-	log.Printf("上游: %s", UpstreamUrl)
-	log.Printf("Debug模式: %v", DebugMode)
-	log.Fatal(http.ListenAndServe(Port, nil))
+	log.Printf("OpenAI兼容API服务器启动在端口%s", config.Port)
+	log.Printf("默认模型: %s", config.DefaultModelName)
+	log.Printf("上游: %s", config.UpstreamUrl)
+	log.Printf("Debug模式: %v", config.DebugMode)
+	log.Fatal(http.ListenAndServe(config.Port, nil))
 }
 
 func handleOptions(w http.ResponseWriter, r *http.Request) {
@@ -232,19 +268,19 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		Object: "list",
 		Data: []Model{
 			{
-				ID:      DefaultModelName,
+				ID:      config.DefaultModelName,
 				Object:  "model",
 				Created: time.Now().Unix(),
 				OwnedBy: "z.ai",
 			},
 			{
-				ID:      ThinkingModelName,
+				ID:      config.ThinkingModelName,
 				Object:  "model",
 				Created: time.Now().Unix(),
 				OwnedBy: "z.ai",
 			},
 			{
-				ID:      SearchModelName,
+				ID:      config.SearchModelName,
 				Object:  "model",
 				Created: time.Now().Unix(),
 				OwnedBy: "z.ai",
@@ -274,7 +310,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKey := strings.TrimPrefix(authHeader, "Bearer ")
-	if apiKey != DefaultKey {
+	if apiKey != config.DefaultKey {
 		debugLog("无效的API key: %s", apiKey)
 		http.Error(w, "Invalid API key", http.StatusUnauthorized)
 		return
@@ -299,9 +335,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var isThing bool
 	var isSearch bool
 	var searchMcp string
-	if req.Model == ThinkingModelName {
+	if req.Model == config.ThinkingModelName {
 		isThing = true
-	} else if req.Model == SearchModelName {
+	} else if req.Model == config.SearchModelName {
 		isThing = true
 		isSearch = true
 		searchMcp = "deep-web-search"
@@ -341,8 +377,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 选择本次对话使用的token
-	authToken := UpstreamToken
-	if AnonTokenEnabled {
+	authToken := config.UpstreamToken
+	if config.AnonTokenEnabled {
 		if t, err := getAnonymousToken(); err == nil {
 			authToken = t
 			debugLog("匿名token获取成功: %s...", func() string {
@@ -371,10 +407,10 @@ func callUpstreamWithHeaders(upstreamReq UpstreamRequest, refererChatID string, 
 		return nil, err
 	}
 
-	debugLog("调用上游API: %s", UpstreamUrl)
+	debugLog("调用上游API: %s", config.UpstreamUrl)
 	debugLog("上游请求体: %s", string(reqBody))
 
-	req, err := http.NewRequest("POST", UpstreamUrl, bytes.NewBuffer(reqBody))
+	req, err := http.NewRequest("POST", config.UpstreamUrl, bytes.NewBuffer(reqBody))
 	if err != nil {
 		debugLog("创建HTTP请求失败: %v", err)
 		return nil, err
@@ -417,7 +453,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 	if resp.StatusCode != http.StatusOK {
 		debugLog("上游返回错误状态: %d", resp.StatusCode)
 		// 读取错误响应体
-		if DebugMode {
+		if config.DebugMode {
 			body, _ := io.ReadAll(resp.Body)
 			debugLog("上游错误响应: %s", string(body))
 		}
@@ -434,7 +470,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 		s = strings.ReplaceAll(s, "<Full>", "")
 		s = strings.ReplaceAll(s, "</Full>", "")
 		s = strings.TrimSpace(s)
-		switch ThinkTagsMode {
+		switch config.ThinkTagsMode {
 		case "think":
 			s = regexp.MustCompile(`<details[^>]*>`).ReplaceAllString(s, "<think>")
 			s = strings.ReplaceAll(s, "</details>", "</think>")
@@ -464,7 +500,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 		Object:  "chat.completion.chunk",
 		Created: time.Now().Unix(),
-		Model:   DefaultModelName,
+		Model:   config.DefaultModelName,
 		Choices: []Choice{
 			{
 				Index: 0,
@@ -519,7 +555,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 				ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
-				Model:   DefaultModelName,
+				Model:   config.DefaultModelName,
 				Choices: []Choice{{Index: 0, Delta: Delta{}, FinishReason: "stop"}},
 			}
 			writeSSEChunk(w, endChunk)
@@ -545,7 +581,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 							ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 							Object:  "chat.completion.chunk",
 							Created: time.Now().Unix(),
-							Model:   DefaultModelName,
+							Model:   config.DefaultModelName,
 							Choices: []Choice{{Index: 0, Delta: Delta{Content: content}}},
 						}
 						writeSSEChunk(w, chunk)
@@ -567,7 +603,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 						ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 						Object:  "chat.completion.chunk",
 						Created: time.Now().Unix(),
-						Model:   DefaultModelName,
+						Model:   config.DefaultModelName,
 						Choices: []Choice{
 							{
 								Index: 0,
@@ -586,7 +622,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 						ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 						Object:  "chat.completion.chunk",
 						Created: time.Now().Unix(),
-						Model:   DefaultModelName,
+						Model:   config.DefaultModelName,
 						Choices: []Choice{
 							{
 								Index: 0,
@@ -608,7 +644,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 				ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
-				Model:   DefaultModelName,
+				Model:   config.DefaultModelName,
 				Choices: []Choice{
 					{
 						Index:        0,
@@ -652,7 +688,7 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 	if resp.StatusCode != http.StatusOK {
 		debugLog("上游返回错误状态: %d", resp.StatusCode)
 		// 读取错误响应体
-		if DebugMode {
+		if config.DebugMode {
 			body, _ := io.ReadAll(resp.Body)
 			debugLog("上游错误响应: %s", string(body))
 		}
@@ -691,7 +727,7 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 					s = strings.ReplaceAll(s, "<Full>", "")
 					s = strings.ReplaceAll(s, "</Full>", "")
 					s = strings.TrimSpace(s)
-					switch ThinkTagsMode {
+					switch config.ThinkTagsMode {
 					case "think":
 						s = regexp.MustCompile(`<details[^>]*>`).ReplaceAllString(s, "<think>")
 						s = strings.ReplaceAll(s, "</details>", "</think>")
@@ -723,7 +759,7 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
-		Model:   DefaultModelName,
+		Model:   config.DefaultModelName,
 		Choices: []Choice{
 			{
 				Index: 0,
